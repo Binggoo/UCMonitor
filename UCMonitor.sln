@@ -1,0 +1,26 @@
+﻿
+Microsoft Visual Studio Solution File, Format Version 11.00
+# Visual Studio 2010
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "UCMonitor", "UCMonitor\UCMonitor.vcxproj", "{A1DEBC22-2C81-4425-B6E1-CA071768D554}"
+EndProject
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "UCService", "UCService\UCService.vcxproj", "{8B2A3EE4-9F56-49AF-89CF-4762AF939F2B}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Win32 = Debug|Win32
+		Release|Win32 = Release|Win32
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{A1DEBC22-2C81-4425-B6E1-CA071768D554}.Debug|Win32.ActiveCfg = Debug|Win32
+		{A1DEBC22-2C81-4425-B6E1-CA071768D554}.Debug|Win32.Build.0 = Debug|Win32
+		{A1DEBC22-2C81-4425-B6E1-CA071768D554}.Release|Win32.ActiveCfg = Release|Win32
+		{A1DEBC22-2C81-4425-B6E1-CA071768D554}.Release|Win32.Build.0 = Release|Win32
+		{8B2A3EE4-9F56-49AF-89CF-4762AF939F2B}.Debug|Win32.ActiveCfg = Debug|Win32
+		{8B2A3EE4-9F56-49AF-89CF-4762AF939F2B}.Debug|Win32.Build.0 = Debug|Win32
+		{8B2A3EE4-9F56-49AF-89CF-4762AF939F2B}.Release|Win32.ActiveCfg = Release|Win32
+		{8B2A3EE4-9F56-49AF-89CF-4762AF939F2B}.Release|Win32.Build.0 = Release|Win32
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+EndGlobal
