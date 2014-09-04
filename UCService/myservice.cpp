@@ -101,7 +101,7 @@ void CMyService::Run()
 
 	BOOL bRet = server.Start(szIpAddress,nPort);
 
-	while (!bRet)
+	while (!bRet && m_bIsRunning)
 	{
 		printf("Start server(%s:%d) failed ! Please check the ip address and the listen port is right.\n"
 			,szIpAddress,nPort);
@@ -123,7 +123,10 @@ void CMyService::Run()
 	printf("Start server(%s:%d) success...\n",szIpAddress,nPort);
 	server.WriteLogFile(TRUE,"Start server(%s:%d) success...",szIpAddress,nPort);
 
-	while (m_bIsRunning);
+	while (m_bIsRunning)
+	{
+		Sleep(1000);
+	}
 
 	server.Shutdown();
 

@@ -26,6 +26,7 @@ CServer::CServer()
 CServer::~CServer(void)
 {
 	CleanupClientData();
+	CleanUpIncompleteData();
 
 	::DeleteCriticalSection(&m_ClientDataLock);
 	::DeleteCriticalSection(&m_IncompleteDataLock);
