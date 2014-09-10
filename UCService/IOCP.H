@@ -8,7 +8,7 @@
 #include <windows.h>
 #include <Mswsock.h>
 
-#define BUFFER_SIZE               1024*1024	// I/O请求的缓冲区大小
+#define BUFFER_SIZE               (512+12)*1024	// I/O请求的缓冲区大小
 #define DEFULT_PORT_NUM           7788      // 默认端口号
 #define DEFAULT_MAX_CONNECTIONS   2000      // 默认最大连接数量
 #define DEFAULT_MAX_FREE_BUFFERS  200       // 默认最大空的缓存数
