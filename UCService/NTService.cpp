@@ -18,8 +18,8 @@ CNTService::CNTService(const char* szServiceName)
     
     // Set the default service name and version
     strncpy_s(m_szServiceName, szServiceName, sizeof(m_szServiceName)-1);
-    m_iMajorVersion = 1;
-    m_iMinorVersion = 0;
+    m_iMajorVersion = MAJOR_VERSION;
+    m_iMinorVersion = MINOR_VERSION;
     m_hEventSource = NULL;
 
     // set up the initial service status 
@@ -59,7 +59,7 @@ BOOL CNTService::ParseStandardArgs(int argc, char* argv[])
 	{
 
         // Spit out version info
-        printf("%s Version %d.%d\n",
+        printf("%s Version %d.%02d\n",
                m_szServiceName, m_iMajorVersion, m_iMinorVersion);
         printf("The service is %s installed\n",
                IsInstalled() ? "currently" : "not");
@@ -219,7 +219,7 @@ BOOL CNTService::Install()
                                          m_szServiceName,
                                          SERVICE_ALL_ACCESS,
                                          SERVICE_WIN32_OWN_PROCESS,
-                                         SERVICE_DEMAND_START,        // start condition
+										 SERVICE_AUTO_START,//SERVICE_DEMAND_START,        // start condition
                                          SERVICE_ERROR_NORMAL,
                                          szFilePath,
                                          NULL,

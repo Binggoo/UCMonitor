@@ -1,5 +1,6 @@
 // UCService.cpp : 定义控制台应用程序的入口点。
 //
+// V1.01 2014-10-09 Binggoo  1.修改服务自动启动
 
 #include "stdafx.h"
 #include "myservice.h"

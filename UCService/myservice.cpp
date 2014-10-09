@@ -93,8 +93,8 @@ void CMyService::Run()
 	server.SetPath(hLogFile,szImagePath,szRecordPath);
 
 	system("cls");
-	printf("%s Version %d.%d\n",m_szServiceName, m_iMajorVersion, m_iMinorVersion);
-	server.WriteLogFile(FALSE,"\r\n%s Version %d.%d",m_szServiceName, m_iMajorVersion, m_iMinorVersion);
+	printf("%s Version %d.%02d\n",m_szServiceName, m_iMajorVersion, m_iMinorVersion);
+	server.WriteLogFile(FALSE,"\r\n%s Version %d.%02d",m_szServiceName, m_iMajorVersion, m_iMinorVersion);
 
 	ini.GetString(_T("ServerSetting"),_T("ServerIP"),szIpAddress,256);
 	nPort = ini.GetInt(_T("ServerSetting"),_T("ListenPort"),7788);
