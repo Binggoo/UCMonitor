@@ -74,11 +74,15 @@ void CMyService::Run()
 
 	char szImagePath[MAX_PATH] = {NULL};
 	char szRecordPath[MAX_PATH] = {NULL};
+	char szPackagePath[MAX_PATH] = {NULL};
+	char szCustomLogPath[MAX_PATH] = {NULL};
 	char szIpAddress[256] = {NULL};
 	int nPort = 7788;
 
 	ini.GetString(_T("PathSetting"),_T("ImagePath"),szImagePath,MAX_PATH);
 	ini.GetString(_T("PathSetting"),_T("RecordPath"),szRecordPath,MAX_PATH);
+	ini.GetString(_T("PathSetting"),_T("PackagePath"),szPackagePath,MAX_PATH);
+	ini.GetString(_T("PathSetting"),_T("UserLogPath"),szCustomLogPath,MAX_PATH);
 
 	if (!PathFileExistsA(szImagePath))
 	{
@@ -90,7 +94,18 @@ void CMyService::Run()
 		SHCreateDirectoryExA(NULL,szRecordPath,NULL);
 	}
 
+	if (!PathFileExistsA(szPackagePath))
+	{
+		SHCreateDirectoryExA(NULL,szPackagePath,NULL);
+	}
+
+	if (!PathFileExistsA(szCustomLogPath))
+	{
+		SHCreateDirectoryExA(NULL,szCustomLogPath,NULL);
+	}
+
 	server.SetPath(hLogFile,szImagePath,szRecordPath);
+	server.SetOtherPath(szPackagePath,szCustomLogPath);
 
 	system("cls");
 	printf("%s Version %d.%02d\n",m_szServiceName, m_iMajorVersion, m_iMinorVersion);

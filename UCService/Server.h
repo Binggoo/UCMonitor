@@ -36,6 +36,9 @@ typedef std::vector<ClientData *>::iterator ClientDataIteractor;
 typedef std::vector<IncompleteData *> VecIncompleteData;
 typedef std::vector<IncompleteData *>::iterator IncompleteDataIteractor;
 
+typedef std::vector<char *> VecString;
+typedef std::vector<char *>::iterator StringIteractor;
+
 class CServer : public CIOCPServer
 {
 public:
@@ -43,6 +46,7 @@ public:
 	~CServer(void);
 
 	void SetPath(HANDLE hLogFile,char *szImagePath,char *szRecordPath);
+	void SetOtherPath(char *szPackagePath,char *szCustomLogPath);
 
 private:
 	VecClientData m_ClientDataVector;
@@ -51,6 +55,8 @@ private:
 	CRITICAL_SECTION m_IncompleteDataLock;
 	char m_szImagePath[MAX_PATH];
 	char m_szRecordPath[MAX_PATH];
+	char m_szPackagePath[MAX_PATH];
+	char m_szCustomLogPath[MAX_PATH];
 	HANDLE m_hThreadEnvent;
 
 	volatile int m_nThreadCount;
@@ -86,6 +92,9 @@ private:
 
 	static DWORD WINAPI CommandThreadProc(LPVOID lpParm);
 	void HandleCommand(CIOCPContext *pContext,DWORD dwCmd);
+
+	ULONGLONG EnumFile(const char *folder,VecString &vecFiles);
+	void CleanVecString(VecString *pvecFiles);
 
 };
 

@@ -1,5 +1,10 @@
 #include "stdafx.h"
 #include "Server.h"
+#include <shlwapi.h>
+#include <shlobj.h>
+
+#pragma comment(lib,"shlwapi.lib")
+#pragma comment(lib,"shell32.lib")
 
 #define SIZEOF_IMAGE_HEADER 1024
 #define PKG_HEADER_SIZE     12
@@ -15,8 +20,11 @@ CServer::CServer()
 	::InitializeCriticalSection(&m_ClientDataLock);
 	::InitializeCriticalSection(&m_IncompleteDataLock);
 
-	memset(m_szImagePath,0,MAX_PATH);
-	memset(m_szRecordPath,0,MAX_PATH);
+	m_szImagePath[0] = '\0';
+	m_szRecordPath[0] = '\0';
+	m_szPackagePath[0] = '\0';
+	m_szCustomLogPath[0] = '\0';
+
 	m_nThreadCount = 0;
 
 	m_hThreadEnvent = ::CreateEvent(NULL,FALSE,TRUE,NULL);
@@ -234,7 +242,9 @@ void CServer::OnReadCompleted( CIOCPContext *pContext, CIOCPBuffer *pBuffer )
 			strcpy_s(clientData->szFileName,fileLen,&tmpBuffer[sizeof(CMD_IN)]);
 		}
 			
-		if (cmdIn.dwCmdIn == CMD_UPLOAD_LOG_IN || cmdIn.dwCmdIn == CMD_MAKE_IMAGE_IN)
+		if (cmdIn.dwCmdIn == CMD_UPLOAD_LOG_IN 
+			|| cmdIn.dwCmdIn == CMD_MAKE_IMAGE_IN
+			|| cmdIn.dwCmdIn == CMD_USER_LOG_IN)
 		{
 			int len = cmdIn.dwSizeSend - sizeof(CMD_IN) - fileLen - 1; // 不包含EndFlag;
 			char *buf = new char[len];
@@ -529,6 +539,12 @@ void CServer::SetPath(HANDLE hLogFile, char *szImagePath,char *szRecordPath )
 	strcpy_s(m_szRecordPath,strlen(szRecordPath) + 1,szRecordPath);
 }
 
+void CServer::SetOtherPath(char *szPackagePath,char *szCustomLogPath)
+{
+	strcpy_s(m_szPackagePath,strlen(szPackagePath) + 1,szPackagePath);
+	strcpy_s(m_szCustomLogPath,strlen(szCustomLogPath) + 1,szCustomLogPath);
+}
+
 DWORD WINAPI CServer::CommandThreadProc( LPVOID lpParm )
 {
 	LPVOID_PARM lpVoid_Parm = (LPVOID_PARM)lpParm;
@@ -630,12 +646,16 @@ void CServer::HandleCommand( CIOCPContext *pContext,DWORD dwCmd )
 
 					bResult = FALSE;
 
+					SendText(pContext,(char *)&logOut,sizeof(CMD_OUT));
+
 					break;
 				}
 
 				ReleaseDataBuf(dataBuf);
 
 				ullOffset += dwLen;
+
+				SendText(pContext,(char *)&logOut,sizeof(CMD_OUT));
 			}
 			else
 			{
@@ -648,13 +668,152 @@ void CServer::HandleCommand( CIOCPContext *pContext,DWORD dwCmd )
 
 		CloseHandle(hFile);
 
-		SendText(pContext,(char *)&logOut,sizeof(CMD_OUT));
-
 		if (bResult)
 		{
 			printf("[%s:%d]upload log file %s success.\n"
 				,::inet_ntoa(pContext->addrRemote.sin_addr),::ntohs(pContext->addrRemote.sin_port),filename);
 			WriteLogFile(TRUE,"[%s:%d]upload log file %s success."
+				,::inet_ntoa(pContext->addrRemote.sin_addr),::ntohs(pContext->addrRemote.sin_port),filename);
+		}
+
+		m_nThreadCount--;
+
+		SetEvent(m_hThreadEnvent);
+
+		RemoveClientData(clientData);
+		RemoveIncompleteData(pContext);
+
+		return;
+	}
+	else if (dwCmd == CMD_USER_LOG_IN)
+	{
+		CMD_OUT logOut = {NULL};
+		logOut.dwCmdOut = CMD_USER_LOG_OUT;
+		logOut.dwSizeSend = sizeof(CMD_OUT);
+		logOut.errType = errorType;
+		logOut.dwErrorCode = dwErrorCode;
+
+		ullOffset = 0;
+
+		printf("[%s:%d]user log file %s start...\n"
+			,::inet_ntoa(pContext->addrRemote.sin_addr),::ntohs(pContext->addrRemote.sin_port),filename);
+		WriteLogFile(TRUE,"[%s:%d]user log file %s start..."
+			,::inet_ntoa(pContext->addrRemote.sin_addr),::ntohs(pContext->addrRemote.sin_port),filename);
+
+		sprintf_s(filename,"%s\\%s",m_szCustomLogPath,clientData->szFileName);
+
+		// 判断文件夹是否存在，不存在则创建
+		char *folder = new char[strlen(filename) + 1];
+		strcpy_s(folder,strlen(filename) + 1,filename);
+
+		char *pdest = strrchr(folder,'\\');
+
+		if (pdest != NULL)
+		{
+			pdest[0] = '\0';
+		}
+
+		if (!PathFileExistsA(folder))
+		{
+			SHCreateDirectoryExA(NULL,folder,NULL);
+		}
+
+		delete []folder;
+		folder = NULL;
+
+		HANDLE hFile = ::CreateFile(filename,
+			GENERIC_READ | GENERIC_WRITE,
+			FILE_SHARE_READ | FILE_SHARE_WRITE,
+			NULL,
+			CREATE_ALWAYS,
+			FILE_FLAG_OVERLAPPED,
+			NULL);
+
+		if (hFile == INVALID_HANDLE_VALUE)
+		{
+			dwErrorCode = GetLastError();
+			printf("[%s:%d]create user log file %s failed with system error code:%d\n"
+				,::inet_ntoa(pContext->addrRemote.sin_addr),::ntohs(pContext->addrRemote.sin_port),filename,dwErrorCode);
+			WriteLogFile(TRUE,"[%s:%d]create user log file %s failed with system error code:%d"
+				,::inet_ntoa(pContext->addrRemote.sin_addr),::ntohs(pContext->addrRemote.sin_port),filename,dwErrorCode);
+
+			logOut.errType = errorType;
+			logOut.dwErrorCode = dwErrorCode;
+
+			SendText(pContext,(char *)&logOut,sizeof(CMD_OUT));
+
+			m_nThreadCount--;
+
+			SetEvent(m_hThreadEnvent);
+
+			RemoveClientData(clientData);
+			RemoveIncompleteData(pContext);
+
+			return;
+		}
+
+		do 
+		{
+			bEnd = clientData->bEnd;
+			bStop = clientData->bStop;
+			DataBuf *dataBuf = GetHeadDataBuf(clientData);
+
+			if (dataBuf)
+			{
+				dwLen = dataBuf->len;
+				if (!WriteFileAsyn(hFile,ullOffset,dwLen,(LPBYTE)dataBuf->buf,&overlapped,&dwErrorCode))
+				{
+					ReleaseDataBuf(dataBuf);
+
+					printf("[%s:%d]write user log file %s failed with system error code:%d\n"
+						,::inet_ntoa(pContext->addrRemote.sin_addr),::ntohs(pContext->addrRemote.sin_port),filename,dwErrorCode);
+					WriteLogFile(TRUE,"[%s:%d]write user log file %s failed with system error code:%d"
+						,::inet_ntoa(pContext->addrRemote.sin_addr),::ntohs(pContext->addrRemote.sin_port),filename,dwErrorCode);
+
+					logOut.errType = errorType;
+					logOut.dwErrorCode = dwErrorCode;
+
+					SendText(pContext,(char *)&logOut,sizeof(CMD_OUT));
+
+					bResult = FALSE;
+
+					break;
+				}
+
+				ReleaseDataBuf(dataBuf);
+
+				ullOffset += dwLen;
+
+				SendText(pContext,(char *)&logOut,sizeof(CMD_OUT));
+			}
+			else
+			{
+				Sleep(10);
+				continue;
+			}
+
+
+		} while (!bEnd && (!pContext->bClosing && pContext->s != 0) && !bStop);
+
+		CloseHandle(hFile);
+
+		if (bStop)
+		{
+			errorType = ErrorType_Custom;
+			dwErrorCode = CustomError_Cancel;
+			bResult = FALSE;
+
+			printf("[%s:%d]upload user log %s canceled by user with custom error code:0x%X\n"
+				,::inet_ntoa(pContext->addrRemote.sin_addr),::ntohs(pContext->addrRemote.sin_port),filename,dwErrorCode);
+			WriteLogFile(TRUE,"[%s:%d]upload user log %s canceled by user with custom error code:0x%X"
+				,::inet_ntoa(pContext->addrRemote.sin_addr),::ntohs(pContext->addrRemote.sin_port),filename,dwErrorCode);
+		}
+
+		if (bResult)
+		{
+			printf("[%s:%d]upload user log file %s success.\n"
+				,::inet_ntoa(pContext->addrRemote.sin_addr),::ntohs(pContext->addrRemote.sin_port),filename);
+			WriteLogFile(TRUE,"[%s:%d]upload user log file %s success."
 				,::inet_ntoa(pContext->addrRemote.sin_addr),::ntohs(pContext->addrRemote.sin_port),filename);
 		}
 
@@ -772,9 +931,9 @@ void CServer::HandleCommand( CIOCPContext *pContext,DWORD dwCmd )
 			dwErrorCode = CustomError_Cancel;
 			bResult = FALSE;
 
-			printf("[%s:%d]read copy image file %s canceled by user with custom error code:0x%X\n"
+			printf("[%s:%d]make image file %s canceled by user with custom error code:0x%X\n"
 				,::inet_ntoa(pContext->addrRemote.sin_addr),::ntohs(pContext->addrRemote.sin_port),filename,dwErrorCode);
-			WriteLogFile(TRUE,"[%s:%d]read copy image file %s canceled by user with custom error code:0x%X"
+			WriteLogFile(TRUE,"[%s:%d]make image file %s canceled by user with custom error code:0x%X"
 				,::inet_ntoa(pContext->addrRemote.sin_addr),::ntohs(pContext->addrRemote.sin_port),filename,dwErrorCode);
 		}
 
@@ -997,7 +1156,357 @@ void CServer::HandleCommand( CIOCPContext *pContext,DWORD dwCmd )
 		{
 			printf("[%s:%d]copy image file %s success.\n"
 				,::inet_ntoa(pContext->addrRemote.sin_addr),::ntohs(pContext->addrRemote.sin_port),filename);
-			WriteLogFile(TRUE,"[%s:%d]make image file %s success."
+			WriteLogFile(TRUE,"[%s:%d]copy image file %s success."
+				,::inet_ntoa(pContext->addrRemote.sin_addr),::ntohs(pContext->addrRemote.sin_port),filename);
+		}
+
+		m_nThreadCount--;
+
+		SetEvent(m_hThreadEnvent);
+
+		return;
+	}
+	else if (dwCmd == CMD_DOWN_PKG_IN)
+	{
+		CMD_OUT downPackageOut = {NULL};
+		downPackageOut.dwCmdOut = CMD_DOWN_PKG_OUT;
+		downPackageOut.dwSizeSend = sizeof(CMD_OUT);
+		downPackageOut.errType = errorType;
+		downPackageOut.dwErrorCode = dwErrorCode;
+
+		printf("[%s:%d]download package file %s start...\n"
+			,::inet_ntoa(pContext->addrRemote.sin_addr),::ntohs(pContext->addrRemote.sin_port),filename);
+		WriteLogFile(TRUE,"[%s:%d]download package file %s start..."
+			,::inet_ntoa(pContext->addrRemote.sin_addr),::ntohs(pContext->addrRemote.sin_port),filename);
+
+		sprintf_s(filename,"%s\\%s",m_szPackagePath,clientData->szFileName);
+
+		VecString vecFiles;
+		ULONGLONG ullFileSize = EnumFile(filename,vecFiles);
+
+		for (StringIteractor it = vecFiles.begin();it != vecFiles.end();it++)
+		{
+			char *file = *it;
+
+			HANDLE hFile = ::CreateFile(file,
+				GENERIC_READ | GENERIC_WRITE,
+				FILE_SHARE_READ | FILE_SHARE_WRITE,
+				NULL,
+				OPEN_EXISTING,
+				FILE_FLAG_OVERLAPPED,
+				NULL);
+
+			if (hFile == INVALID_HANDLE_VALUE)
+			{
+				dwErrorCode = GetLastError();
+				printf("[%s:%d]open download package file %s failed with system error code:%d\n"
+					,::inet_ntoa(pContext->addrRemote.sin_addr),::ntohs(pContext->addrRemote.sin_port),file,dwErrorCode);
+				WriteLogFile(TRUE,"[%s:%d]open download package file %s failed with system error code:%d"
+					,::inet_ntoa(pContext->addrRemote.sin_addr),::ntohs(pContext->addrRemote.sin_port),file,dwErrorCode);
+
+				downPackageOut.errType = errorType;
+				downPackageOut.dwErrorCode = dwErrorCode;
+
+				SendText(pContext,(char *)&downPackageOut,sizeof(CMD_OUT));
+
+				m_nThreadCount--;
+
+				SetEvent(m_hThreadEnvent);
+
+				RemoveClientData(clientData);
+				RemoveIncompleteData(pContext);
+				CleanVecString(&vecFiles);
+
+				return;
+			}
+
+			//获取除去Package路径以外的文件名称
+			char *name = strstr(file,filename);
+
+			if (name == NULL)
+			{
+				name = file;
+			}
+			else
+			{
+				name += strlen(filename) + 1;
+			}
+
+			// 获取Image的大小
+			LARGE_INTEGER liFillSize = {0};
+			GetFileSizeEx(hFile,&liFillSize);
+			ULONGLONG ullReadSize = 0;
+			while (ullReadSize < (ULONGLONG)liFillSize.QuadPart)
+			{
+				bStop = clientData->bStop;
+				bEnd = clientData->bEnd;
+
+				while (!bEnd && !bStop && !pContext->bClosing && pContext->s != 0)
+				{
+					Sleep(10);
+					bStop = clientData->bStop;
+					bEnd = clientData->bEnd;
+				}
+
+				clientData->bEnd = FALSE;
+
+				if (bStop)
+				{
+					bResult = FALSE;
+					break;
+				}
+
+				if (pContext->bClosing || pContext->s == 0)
+				{
+					bResult = FALSE;
+					break;
+				}
+
+				dwLen = 512 * 1024; // 512KB
+
+				PBYTE pByte = new BYTE[dwLen];
+				ZeroMemory(pByte,dwLen);
+
+				if (!ReadFileAsyn(hFile,ullReadSize,dwLen,pByte,&overlapped,&dwErrorCode))
+				{
+					bResult = FALSE;
+					delete []pByte;
+
+					printf("[%s:%d]read download package file %s failed with system error code:%d\n"
+						,::inet_ntoa(pContext->addrRemote.sin_addr),::ntohs(pContext->addrRemote.sin_port),file,dwErrorCode);
+					WriteLogFile(TRUE,"[%s:%d]read download package file %s failed with system error code:%d"
+						,::inet_ntoa(pContext->addrRemote.sin_addr),::ntohs(pContext->addrRemote.sin_port),file,dwErrorCode);
+
+					downPackageOut.errType = errorType;
+					downPackageOut.dwErrorCode = dwErrorCode;
+
+					SendText(pContext,(char *)&downPackageOut,sizeof(UPLOAD_LOG_OUT));
+
+					break;
+				}
+
+				ullReadSize += dwLen;
+
+				// 发送数据
+				DWORD dwSndLength = sizeof(CMD_OUT) + strlen(name) + 1 + dwLen + 1;
+				BYTE *pSend = new BYTE[dwSndLength];
+				ZeroMemory(pSend,dwSndLength);
+
+				downPackageOut.dwSizeSend = dwSndLength;
+
+				memcpy(pSend,&downPackageOut,sizeof(CMD_OUT));
+				memcpy(pSend + sizeof(CMD_OUT),name,strlen(name));
+				memcpy(pSend + sizeof(CMD_OUT) + strlen(name) + 1,pByte,dwLen);
+
+				if (ullReadSize >= (ULONGLONG)liFillSize.QuadPart)
+				{
+					//已经读完，加上end标志
+					pSend[dwSndLength - 1] = END_FLAG;
+				}
+
+				SendText(pContext,(char *)pSend,dwSndLength);
+
+				delete []pSend;
+				delete []pByte;
+
+			}
+
+			CloseHandle(hFile);
+
+			if (bStop)
+			{
+				bResult = FALSE;
+				break;
+			}
+
+			if (pContext->bClosing || pContext->s == 0)
+			{
+				bResult = FALSE;
+				break;
+			}
+
+		}
+
+		if (bStop)
+		{
+
+			errorType = ErrorType_Custom;
+			dwErrorCode = CustomError_Cancel;
+			bResult = FALSE;
+
+			printf("[%s:%d]read download package file %s canceled by user with custom error code:0x%X\n"
+				,::inet_ntoa(pContext->addrRemote.sin_addr),::ntohs(pContext->addrRemote.sin_port),filename,dwErrorCode);
+			WriteLogFile(TRUE,"[%s:%d]read download package file %s canceled by user with custom error code:0x%X"
+				,::inet_ntoa(pContext->addrRemote.sin_addr),::ntohs(pContext->addrRemote.sin_port),filename,dwErrorCode);
+
+		}
+
+		RemoveClientData(clientData);
+		RemoveIncompleteData(pContext);
+		CleanVecString(&vecFiles);
+
+		if (bResult)
+		{
+			printf("[%s:%d]download package file %s success.\n"
+				,::inet_ntoa(pContext->addrRemote.sin_addr),::ntohs(pContext->addrRemote.sin_port),filename);
+			WriteLogFile(TRUE,"[%s:%d]download package file %s success."
+				,::inet_ntoa(pContext->addrRemote.sin_addr),::ntohs(pContext->addrRemote.sin_port),filename);
+		}
+
+		m_nThreadCount--;
+
+		SetEvent(m_hThreadEnvent);
+
+		return;
+	}
+	else if (dwCmd == CMD_DOWN_LIST_IN)
+	{
+		CMD_OUT downPackageOut = {NULL};
+		downPackageOut.dwCmdOut = CMD_DOWN_LIST_OUT;
+		downPackageOut.dwSizeSend = sizeof(CMD_OUT);
+		downPackageOut.errType = errorType;
+		downPackageOut.dwErrorCode = dwErrorCode;
+
+		printf("[%s:%d]download package list file %s start...\n"
+			,::inet_ntoa(pContext->addrRemote.sin_addr),::ntohs(pContext->addrRemote.sin_port),filename);
+		WriteLogFile(TRUE,"[%s:%d]download package list file %s start..."
+			,::inet_ntoa(pContext->addrRemote.sin_addr),::ntohs(pContext->addrRemote.sin_port),filename);
+
+		sprintf_s(filename,"%s\\%s",m_szPackagePath,clientData->szFileName);
+
+		HANDLE hFile = ::CreateFile(filename,
+			GENERIC_READ | GENERIC_WRITE,
+			FILE_SHARE_READ | FILE_SHARE_WRITE,
+			NULL,
+			OPEN_EXISTING,
+			FILE_FLAG_OVERLAPPED,
+			NULL);
+
+		if (hFile == INVALID_HANDLE_VALUE)
+		{
+			dwErrorCode = GetLastError();
+			printf("[%s:%d]open download package list file %s failed with system error code:%d\n"
+				,::inet_ntoa(pContext->addrRemote.sin_addr),::ntohs(pContext->addrRemote.sin_port),filename,dwErrorCode);
+			WriteLogFile(TRUE,"[%s:%d]open download package list file %s failed with system error code:%d"
+				,::inet_ntoa(pContext->addrRemote.sin_addr),::ntohs(pContext->addrRemote.sin_port),filename,dwErrorCode);
+
+			downPackageOut.errType = errorType;
+			downPackageOut.dwErrorCode = dwErrorCode;
+
+			SendText(pContext,(char *)&downPackageOut,sizeof(CMD_OUT));
+
+			m_nThreadCount--;
+
+			SetEvent(m_hThreadEnvent);
+
+			RemoveClientData(clientData);
+			RemoveIncompleteData(pContext);
+
+			return;
+		}
+
+		// 获取Image的大小
+		LARGE_INTEGER liFillSize = {0};
+		GetFileSizeEx(hFile,&liFillSize);
+		ULONGLONG ullReadSize = 0;
+		while (ullReadSize < (ULONGLONG)liFillSize.QuadPart)
+		{
+			bStop = clientData->bStop;
+			bEnd = clientData->bEnd;
+
+			while (!bEnd && !bStop && !pContext->bClosing && pContext->s != 0)
+			{
+				Sleep(10);
+				bStop = clientData->bStop;
+				bEnd = clientData->bEnd;
+			}
+
+			clientData->bEnd = FALSE;
+
+			if (bStop)
+			{
+				bResult = FALSE;
+				break;
+			}
+
+			if (pContext->bClosing || pContext->s == 0)
+			{
+				bResult = FALSE;
+				break;
+			}
+
+			dwLen = 512 * 1024; // 512KB
+
+			PBYTE pByte = new BYTE[dwLen];
+			ZeroMemory(pByte,dwLen);
+
+			if (!ReadFileAsyn(hFile,ullReadSize,dwLen,pByte,&overlapped,&dwErrorCode))
+			{
+				bResult = FALSE;
+				delete []pByte;
+
+				printf("[%s:%d]read download package list file %s failed with system error code:%d\n"
+					,::inet_ntoa(pContext->addrRemote.sin_addr),::ntohs(pContext->addrRemote.sin_port),filename,dwErrorCode);
+				WriteLogFile(TRUE,"[%s:%d]read download package list file %s failed with system error code:%d"
+					,::inet_ntoa(pContext->addrRemote.sin_addr),::ntohs(pContext->addrRemote.sin_port),filename,dwErrorCode);
+
+				downPackageOut.errType = errorType;
+				downPackageOut.dwErrorCode = dwErrorCode;
+
+				SendText(pContext,(char *)&downPackageOut,sizeof(UPLOAD_LOG_OUT));
+
+				break;
+			}
+
+			ullReadSize += dwLen;
+
+			// 发送数据
+			DWORD dwSndLength = sizeof(CMD_OUT) + dwLen + 1;
+			BYTE *pSend = new BYTE[dwSndLength];
+			ZeroMemory(pSend,dwSndLength);
+
+			downPackageOut.dwSizeSend = dwSndLength;
+
+			memcpy(pSend,&downPackageOut,sizeof(CMD_OUT));
+			memcpy(pSend + sizeof(CMD_OUT),pByte,dwLen);
+
+			if (ullReadSize >= (ULONGLONG)liFillSize.QuadPart)
+			{
+				//已经读完，加上end标志
+				pSend[dwSndLength - 1] = END_FLAG;
+			}
+
+			SendText(pContext,(char *)pSend,dwSndLength);
+
+			delete []pSend;
+			delete []pByte;
+
+		}
+
+		CloseHandle(hFile);
+
+		if (bStop)
+		{
+
+			errorType = ErrorType_Custom;
+			dwErrorCode = CustomError_Cancel;
+			bResult = FALSE;
+
+			printf("[%s:%d]read download package list file %s canceled by user with custom error code:0x%X\n"
+				,::inet_ntoa(pContext->addrRemote.sin_addr),::ntohs(pContext->addrRemote.sin_port),filename,dwErrorCode);
+			WriteLogFile(TRUE,"[%s:%d]read download package list file %s canceled by user with custom error code:0x%X"
+				,::inet_ntoa(pContext->addrRemote.sin_addr),::ntohs(pContext->addrRemote.sin_port),filename,dwErrorCode);
+
+		}
+
+		RemoveClientData(clientData);
+		RemoveIncompleteData(pContext);
+
+		if (bResult)
+		{
+			printf("[%s:%d]download package list file %s success.\n"
+				,::inet_ntoa(pContext->addrRemote.sin_addr),::ntohs(pContext->addrRemote.sin_port),filename);
+			WriteLogFile(TRUE,"[%s:%d]download package list file %s success."
 				,::inet_ntoa(pContext->addrRemote.sin_addr),::ntohs(pContext->addrRemote.sin_port),filename);
 		}
 
@@ -1111,8 +1620,10 @@ void CServer::HandleCommand( CIOCPContext *pContext,DWORD dwCmd )
 			return;
 		}
 
+		DWORD dwListSize = ((IMAGE_HEADER *)pkgHead)->dwListSize;
+
 		// 发送数据
-		DWORD dwSndLength = sizeof(CMD_OUT) + SIZEOF_IMAGE_HEADER + 1;
+		DWORD dwSndLength = sizeof(CMD_OUT) + SIZEOF_IMAGE_HEADER + dwListSize + 1;
 		BYTE *pSend = new BYTE[dwSndLength];
 		ZeroMemory(pSend,dwSndLength);
 		pSend[dwSndLength - 1] = END_FLAG;
@@ -1121,6 +1632,42 @@ void CServer::HandleCommand( CIOCPContext *pContext,DWORD dwCmd )
 
 		memcpy(pSend,&queryImageOut,sizeof(CMD_OUT));
 		memcpy(pSend + sizeof(CMD_OUT),&pkgHead,SIZEOF_IMAGE_HEADER);
+
+		if (dwListSize != 0)
+		{
+			PBYTE pList = new BYTE[dwListSize];
+			ZeroMemory(pList,dwListSize);
+			if (!ReadFileAsyn(hFile,SIZEOF_IMAGE_HEADER,dwListSize,pList,&overlapped,&dwErrorCode))
+			{
+				delete []pList;
+				delete []pSend;
+
+				printf("[%s:%d]read query image file %s failed with system error code:%d\n"
+					,::inet_ntoa(pContext->addrRemote.sin_addr),::ntohs(pContext->addrRemote.sin_port),filename,dwErrorCode);
+				WriteLogFile(TRUE,"[%s:%d]read query image file %s failed with system error code:%d"
+					,::inet_ntoa(pContext->addrRemote.sin_addr),::ntohs(pContext->addrRemote.sin_port),filename,dwErrorCode);
+
+				queryImageOut.errType = errorType;
+				queryImageOut.dwErrorCode = dwErrorCode;
+
+				bResult = FALSE;
+
+				SendText(pContext,(char *)&queryImageOut,sizeof(CMD_OUT));
+
+				m_nThreadCount--;
+
+				SetEvent(m_hThreadEnvent);
+
+				RemoveClientData(clientData);
+				RemoveIncompleteData(pContext);
+
+				CloseHandle(hFile);
+
+				return;
+			}
+
+			memcpy(pSend + sizeof(CMD_OUT) + SIZEOF_IMAGE_HEADER,pList,dwListSize);
+		}
 
 		SendText(pContext,(char *)pSend,dwSndLength);
 		delete []pSend;
@@ -1132,6 +1679,154 @@ void CServer::HandleCommand( CIOCPContext *pContext,DWORD dwCmd )
 			,::inet_ntoa(pContext->addrRemote.sin_addr),::ntohs(pContext->addrRemote.sin_port),filename);
 
 		CloseHandle(hFile);
+
+		RemoveClientData(clientData);
+		RemoveIncompleteData(pContext);
+
+		m_nThreadCount--;
+
+		SetEvent(m_hThreadEnvent);
+
+		return;
+
+	}
+	else if (dwCmd == CMD_QUERY_PKG_IN)
+	{
+		CMD_OUT queryPkgOut = {NULL};
+		queryPkgOut.dwCmdOut = CMD_QUERY_PKG_OUT;
+		queryPkgOut.dwSizeSend = sizeof(CMD_OUT);
+		queryPkgOut.errType = errorType;
+		queryPkgOut.dwErrorCode = dwErrorCode;
+
+		printf("[%s:%d]query package file %s start...\n"
+			,::inet_ntoa(pContext->addrRemote.sin_addr),::ntohs(pContext->addrRemote.sin_port),filename);
+		WriteLogFile(TRUE,"[%s:%d]query package file %s start..."
+			,::inet_ntoa(pContext->addrRemote.sin_addr),::ntohs(pContext->addrRemote.sin_port),filename);
+
+		sprintf_s(filename,"%s\\%s",m_szPackagePath,clientData->szFileName);
+
+		VecString vecFiles;
+		ULONGLONG ullFileSize = EnumFile(filename,vecFiles);
+
+		CleanVecString(&vecFiles);
+
+		if (ullFileSize == 0)
+		{
+			dwErrorCode = GetLastError();
+			printf("[%s:%d]query package file %s failed with system error code:%d\n"
+				,::inet_ntoa(pContext->addrRemote.sin_addr),::ntohs(pContext->addrRemote.sin_port),filename,dwErrorCode);
+			WriteLogFile(TRUE,"[%s:%d]query package file %s failed with system error code:%d"
+				,::inet_ntoa(pContext->addrRemote.sin_addr),::ntohs(pContext->addrRemote.sin_port),filename,dwErrorCode);
+
+			queryPkgOut.errType = errorType;
+			queryPkgOut.dwErrorCode = dwErrorCode;
+
+			SendText(pContext,(char *)&queryPkgOut,sizeof(CMD_OUT));
+
+			m_nThreadCount--;
+
+			SetEvent(m_hThreadEnvent);
+
+			RemoveClientData(clientData);
+			RemoveIncompleteData(pContext);
+
+			return;
+		}
+
+		// 发送数据
+		DWORD dwSndLength = sizeof(CMD_OUT) + sizeof(ULONGLONG) + 1;
+		BYTE *pSend = new BYTE[dwSndLength];
+		ZeroMemory(pSend,dwSndLength);
+		pSend[dwSndLength - 1] = END_FLAG;
+
+		queryPkgOut.dwSizeSend = dwSndLength;
+
+		memcpy(pSend,&queryPkgOut,sizeof(CMD_OUT));
+		memcpy(pSend + sizeof(CMD_OUT),&ullFileSize,8);
+
+		SendText(pContext,(char *)pSend,dwSndLength);
+		delete []pSend;
+
+		printf("[%s:%d]query package file %s success.\n"
+			,::inet_ntoa(pContext->addrRemote.sin_addr),::ntohs(pContext->addrRemote.sin_port),filename);
+
+		WriteLogFile(TRUE,"[%s:%d]query package file %s success."
+			,::inet_ntoa(pContext->addrRemote.sin_addr),::ntohs(pContext->addrRemote.sin_port),filename);
+
+		RemoveClientData(clientData);
+		RemoveIncompleteData(pContext);
+
+		m_nThreadCount--;
+
+		SetEvent(m_hThreadEnvent);
+
+		return;
+
+	}
+	else if (dwCmd == CMD_QUERY_LIST_IN)
+	{
+		CMD_OUT queryListOut = {NULL};
+		queryListOut.dwCmdOut = CMD_QUERY_LIST_OUT;
+		queryListOut.dwSizeSend = sizeof(CMD_OUT);
+		queryListOut.errType = errorType;
+		queryListOut.dwErrorCode = dwErrorCode;
+
+		printf("[%s:%d]query change list file %s start...\n"
+			,::inet_ntoa(pContext->addrRemote.sin_addr),::ntohs(pContext->addrRemote.sin_port),filename);
+		WriteLogFile(TRUE,"[%s:%d]query change lis file %s start..."
+			,::inet_ntoa(pContext->addrRemote.sin_addr),::ntohs(pContext->addrRemote.sin_port),filename);
+
+		sprintf_s(filename,"%s\\%s",m_szPackagePath,clientData->szFileName);
+
+		WIN32_FIND_DATA FindData;
+		HANDLE hFind = FindFirstFileA(filename,&FindData);
+
+		if (hFind == INVALID_HANDLE_VALUE)
+		{
+			dwErrorCode = GetLastError();
+			printf("[%s:%d]query change list file %s failed with system error code:%d\n"
+				,::inet_ntoa(pContext->addrRemote.sin_addr),::ntohs(pContext->addrRemote.sin_port),filename,dwErrorCode);
+			WriteLogFile(TRUE,"[%s:%d]query change list file %s failed with system error code:%d"
+				,::inet_ntoa(pContext->addrRemote.sin_addr),::ntohs(pContext->addrRemote.sin_port),filename,dwErrorCode);
+
+			queryListOut.errType = errorType;
+			queryListOut.dwErrorCode = dwErrorCode;
+
+			SendText(pContext,(char *)&queryListOut,sizeof(CMD_OUT));
+
+			m_nThreadCount--;
+
+			SetEvent(m_hThreadEnvent);
+
+			RemoveClientData(clientData);
+			RemoveIncompleteData(pContext);
+
+			return;
+		}
+
+		FindClose(hFind);
+
+		ULONGLONG ullFileSize = FindData.nFileSizeLow + (ULONGLONG)FindData.nFileSizeHigh * 0x100000000;
+
+		// 发送数据
+		DWORD dwSndLength = sizeof(CMD_OUT) + sizeof(ULONGLONG) + 1;
+		BYTE *pSend = new BYTE[dwSndLength];
+		ZeroMemory(pSend,dwSndLength);
+		pSend[dwSndLength - 1] = END_FLAG;
+
+		queryListOut.dwSizeSend = dwSndLength;
+
+		memcpy(pSend,&queryListOut,sizeof(CMD_OUT));
+		memcpy(pSend + sizeof(CMD_OUT),&ullFileSize,8);
+
+		SendText(pContext,(char *)pSend,dwSndLength);
+		delete []pSend;
+
+		printf("[%s:%d]query change list file %s success.\n"
+			,::inet_ntoa(pContext->addrRemote.sin_addr),::ntohs(pContext->addrRemote.sin_port),filename);
+
+		WriteLogFile(TRUE,"[%s:%d]query change list file %s success."
+			,::inet_ntoa(pContext->addrRemote.sin_addr),::ntohs(pContext->addrRemote.sin_port),filename);
 
 		RemoveClientData(clientData);
 		RemoveIncompleteData(pContext);
@@ -1335,6 +2030,76 @@ IncompleteData * CServer::GetIncompleteData( CIOCPContext *pContext )
 	::LeaveCriticalSection(&m_IncompleteDataLock);
 
 	return data;
+}
+
+ULONGLONG CServer::EnumFile( const char *folder,VecString &vecFiles )
+{
+	ULONGLONG ullFolderSize = 0;
+
+	if (!PathFileExistsA(folder))
+	{
+		return 0;
+	}
+
+	char tempFind[MAX_PATH] = {NULL};
+
+	sprintf_s(tempFind,"%s\\*.*",folder);
+
+	WIN32_FIND_DATA FindFileData;
+
+	HANDLE hFind = ::FindFirstFileA(tempFind,&FindFileData);
+
+	if (hFind == INVALID_HANDLE_VALUE)
+	{
+		return 0;
+	}
+	
+	while (true)
+	{
+		char tempFile[MAX_PATH] = {NULL};
+		sprintf_s(tempFile,"%s\\%s",folder,FindFileData.cFileName);
+
+		if (FindFileData.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) // 目录
+		{
+			if (FindFileData.cFileName[0] != '.')
+			{
+				ullFolderSize += EnumFile(tempFile,vecFiles);
+			}
+		}
+		else //文件
+		{
+			ullFolderSize += FindFileData.nFileSizeLow + (ULONGLONG)FindFileData.nFileSizeHigh * 0x100000000;
+
+			char *file = new char[strlen(tempFile) + 1];
+			strcpy_s(file,strlen(tempFile) + 1,tempFile);
+
+			vecFiles.push_back(file);
+		}
+
+		if (!FindNextFileA(hFind,&FindFileData))
+		{
+			break;
+		}
+	}
+
+	FindClose(hFind);
+
+	return ullFolderSize;
+}
+
+void CServer::CleanVecString( VecString *pvecFiles )
+{
+	if (pvecFiles != NULL)
+	{
+		for (StringIteractor it = pvecFiles->begin();it != pvecFiles->end();it++)
+		{
+			char *file = *it;
+			delete []file;
+			file = NULL;
+		}
+
+		pvecFiles->clear();
+	}
 }
 
 BOOL ReadFileAsyn( HANDLE hFile,

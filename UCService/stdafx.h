@@ -11,7 +11,7 @@
 #include <tchar.h>
 
 #define MAJOR_VERSION 1
-#define MINOR_VERSION 1
+#define MINOR_VERSION 3
 
 
 // TODO: 在此处引用程序需要的其他头文件
